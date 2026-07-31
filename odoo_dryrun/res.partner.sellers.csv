@@ -1,0 +1,10 @@
+id,name,phone,comment,is_company
+seller_1,Asha Textiles,+91-90000-11111,Owner: Asha Devi | Meesho: https://www.meesho.com/asha-textiles,TRUE
+seller_2,Meera Crafts,+91-90000-22222,Owner: Meera Sharma | Meesho: ,TRUE
+seller_3,Ravi General Store,+91-90000-33333,Owner: Ravi Kumar | Meesho: ,TRUE
+seller_4,User_1,+91-90000-10001,Owner: User 1 | Meesho: ,TRUE
+seller_5,User_2,+91-90000-10002,Owner: User 2 | Meesho: ,TRUE
+seller_6,User_3,+91-90000-10003,Owner: User 3 | Meesho: ,TRUE
+seller_7,User_4,+91-90000-10004,Owner: User 4 | Meesho: ,TRUE
+seller_8,User_5,+91-90000-10005,Owner: User 5 | Meesho: ,TRUE
+seller_9,Bhondals,1234567890,Owner: Bhaskar | Meesho: ,TRUE

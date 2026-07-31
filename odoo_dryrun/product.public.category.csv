@@ -1,0 +1,41 @@
+id,name,parent_id/id
+dept_1,electronics,
+dept_2,home & kitchen,
+dept_3,apparels,
+dept_4,wellness,
+dept_5,grocery,
+dept_6,toys & baby,
+dept_7,automotive & industrial,
+dept_8,books & media,
+dept_9,bags & luggage,
+dept_10,others,
+dept_11,uncategorized,
+cat_1,mobiles,dept_1
+cat_2,computers,dept_1
+cat_3,tv,dept_1
+cat_4,electronics,dept_1
+cat_5,home,dept_2
+cat_6,kitchen,dept_2
+cat_7,appliances,dept_2
+cat_8,pets,dept_2
+cat_9,men's fashion,dept_3
+cat_10,women's fashion,dept_3
+cat_11,kids' fashion,dept_3
+cat_12,beauty,dept_4
+cat_13,health,dept_4
+cat_14,sports,dept_4
+cat_15,fitness,dept_4
+cat_16,grocery,dept_5
+cat_17,toys,dept_6
+cat_18,baby products,dept_6
+cat_19,car,dept_7
+cat_20,motorbike,dept_7
+cat_21,industrial,dept_7
+cat_22,books,dept_8
+cat_23,movies,dept_8
+cat_24,music,dept_8
+cat_25,video games,dept_8
+cat_26,bags,dept_9
+cat_27,luggage,dept_9
+cat_28,others,dept_10
+cat_29,plant,dept_3

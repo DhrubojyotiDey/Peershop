@@ -1,0 +1,27 @@
+# ── Runtime data — NEVER versioned (contains PII) ──
+*.db
+*.db.bak*
+peershop.db*
+
+# ── Logs / pids / runtime state ──
+*.log
+*.pid
+bot_offset
+
+# ── Uploaded & seed media (binaries; per-environment) ──
+media/
+
+# ── Heavy deps (venv) & bytecode ──
+.venv/
+__pycache__/
+*.pyc
+
+# ── Large screenshot artifacts ──
+*.png.png
+Screenshot_*.png
+
+# ── Secrets live in /root/.hermes/.env (outside repo); guard anyway ──
+.env
+
+# ── Local harness/IDE settings ──
+.claude/

@@ -49,6 +49,7 @@ import seller_actions
 HERE = os.path.dirname(os.path.abspath(__file__))
 DB_PATH = os.path.join(HERE, "peershop.db")
 PORT = int(os.environ.get("PEERSHOP_PORT", "8000"))
+HOST = os.environ.get("PEERSHOP_HOST", "127.0.0.1")   # dev sets 0.0.0.0 for LAN access
 WA_COUNTRY_CODE = "91"          # default country code for wa.me links (India)
 
 # Web product-photo uploads (Phase H2).
@@ -1692,8 +1693,8 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def main():
-    server = ThreadingHTTPServer(("127.0.0.1", PORT), Handler)
-    print(f"PeerShop listing on http://localhost:{PORT}  (Ctrl-C to stop)")
+    server = ThreadingHTTPServer((HOST, PORT), Handler)
+    print(f"PeerShop listing on http://{HOST}:{PORT}  (Ctrl-C to stop)")
     try:
         server.serve_forever()
     except KeyboardInterrupt:

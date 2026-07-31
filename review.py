@@ -48,6 +48,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 DB_PATH = os.path.join(HERE, "peershop.db")
 HERMES_ENV = "/root/.hermes/.env"
 PORT = int(os.environ.get("PEERSHOP_REVIEW_PORT", "8001"))
+HOST = os.environ.get("PEERSHOP_REVIEW_HOST", "0.0.0.0")
 ADMIN_COOKIE = "padmin"
 
 
@@ -714,7 +715,7 @@ def main():
     if not _admin_password():
         print("WARNING: PEERSHOP_ADMIN_PASSWORD is not set (env or /root/.hermes/.env) "
               "— nobody can log in until it is.")
-    server = ThreadingHTTPServer(("0.0.0.0", PORT), Handler)
+    server = ThreadingHTTPServer((HOST, PORT), Handler)
     print(f"PeerShop review queue on http://localhost:{PORT}  (Ctrl-C to stop)")
     try:
         server.serve_forever()

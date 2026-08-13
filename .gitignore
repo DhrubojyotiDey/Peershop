@@ -1,3 +1,13 @@
+# ── Secrets / credentials ──
+.env
+*.env
+.env.*
+secrets.py
+*_secret*
+*_key*
+api_keys*
+credentials*
+
 # ── Runtime data — NEVER versioned (contains PII) ──
 *.db
 *.db.bak*
@@ -15,13 +25,17 @@ media/
 .venv/
 __pycache__/
 *.pyc
+*.pyo
 
 # ── Large screenshot artifacts ──
 *.png.png
 Screenshot_*.png
 
-# ── Secrets live in /root/.hermes/.env (outside repo); guard anyway ──
-.env
-
 # ── Local harness/IDE settings ──
 .claude/
+.idea/
+.vscode/
+
+# ── Backup databases ──
+*.bak
+*.bak.*

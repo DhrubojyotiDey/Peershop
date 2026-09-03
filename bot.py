@@ -45,7 +45,7 @@ _NEGATE = {"no", "n", "nope", "cancel", "stop", "don't", "dont", "nvm",
            "never mind", "nevermind", "keep it"}
 
 _CMD_SUMMARY = ("/post <title> (with a photo), /remove <id>, "
-                "/price <id> <amount>, /mystore, /help")
+                "/price <id> <amount>, /mystore, /tutorial, /help")
 HELP_TEXT = (
     "PeerShop seller bot — you can just chat with me (e.g. \"change the price of "
     "my red saree to 500\", \"take down the blue kurti\") during your daily "
@@ -56,8 +56,33 @@ HELP_TEXT = (
     "  /remove <id>       take a product down\n"
     "  /price <id> <amt>  change a product's price\n"
     "  /mystore           see your listings and their ids\n"
+    "  /tutorial          walk through how to list a product, step by step\n"
     "  /help              this message\n"
     "Everything you post or edit goes to admin review before it appears publicly."
+)
+
+# Deterministic, no-LLM walkthrough of the /post wizard (post_wizard.py's actual
+# steps). Sent once automatically right after a seller links their Telegram
+# account (telegram_bot.py), and replayable anytime with /tutorial.
+TUTORIAL_TEXT = (
+    "📖 How to list a product, step by step:\n\n"
+    "1️⃣ Send /post to start.\n"
+    "2️⃣ Type the product's name (e.g. \"Denim jeans\").\n"
+    "3️⃣ If you sell in more than one department, I'll show you a numbered list — "
+    "reply with the number.\n"
+    "4️⃣ Send the price in ₹ (e.g. 499), or /skip to leave it unset for now.\n"
+    "5️⃣ Send up to 4 photos, one at a time. Send /done once you've added them "
+    "all (at least 1 photo is required).\n"
+    "6️⃣ Write a short description of the product.\n\n"
+    "That's it — your product is submitted for admin review and goes live once "
+    "approved. You can send /cancel at any point during /post to stop without "
+    "posting anything.\n\n"
+    "Other handy commands:\n"
+    "  /mystore           see your listings and their ids\n"
+    "  /price <id> <amt>  change a product's price\n"
+    "  /remove <id>       take a product down\n"
+    "  /tutorial          show this guide again\n"
+    "  /help              full command list"
 )
 
 
@@ -122,6 +147,8 @@ def _handle_command(seller_id: int, text: str, image_path, db_path: str) -> str:
 
     if cmd == "/help":
         return HELP_TEXT
+    if cmd == "/tutorial":
+        return TUTORIAL_TEXT
     if cmd == "/mystore":
         return _format_store(seller_id, db_path)
     if cmd == "/post":

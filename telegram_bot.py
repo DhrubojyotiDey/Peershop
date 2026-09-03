@@ -131,6 +131,7 @@ def process_update(update: dict) -> None:
         if sid:
             send_message(chat_id, f"Linked to {telegram_link.seller_display(sid)} ✓ "
                                   "You can now manage your store here — try /help.")
+            send_message(chat_id, bot.TUTORIAL_TEXT)
         else:
             send_message(chat_id, "That link code is missing, invalid, or expired. "
                                   + _LINK_HELP)

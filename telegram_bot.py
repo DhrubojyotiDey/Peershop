@@ -21,6 +21,7 @@ CLI:
 
 import json
 import os
+import sqlite3
 import sys
 import time
 import traceback
@@ -35,6 +36,14 @@ from telegram_api import get_me, send_message, get_file, download_file
 HERE = os.path.dirname(os.path.abspath(__file__))
 OFFSET_FILE = os.path.join(HERE, "bot_offset")
 PRODUCT_MEDIA = os.path.join(HERE, "media", "products")   # same dir serve.py serves from
+
+# Forwarded-burst staging (Task 4 of the self-service onboarding plan -- see
+# .hermes/plans/2026-10-10_000000-peershop-self-service-bot-onboarding.md).
+# Separate from PRODUCT_MEDIA: raw forwarded photos are NOT yet real product
+# photos -- they only become one after debounce_worker.py + intake.py (Tasks
+# 5-6) turn a bundle into an actual pending product.
+RAW_INGEST_DB_PATH = telegram_link.DB_PATH
+RAW_INGEST_MEDIA = os.path.join(HERE, "media", "raw_ingest")
 
 POLL_TIMEOUT = telegram_api.POLL_TIMEOUT
 TURNS_CAP = int(os.environ.get("PEERSHOP_TG_TURNS_CAP", "100"))
@@ -100,6 +109,64 @@ _LINK_HELP = ("To manage your store here, link your account: log in at the "
               "(or send /start <code> with the code shown).")
 
 
+# ── forwarded-burst staging (Task 4) ──────────────────────────────────────────
+
+def _is_forwarded(msg: dict) -> bool:
+    """
+    True if this message was forwarded from elsewhere (another chat/group/
+    channel), as opposed to typed/sent directly by the seller. Bot API 7.0+
+    (current) reports this via forward_origin (a MessageOrigin object);
+    forward_from/forward_from_chat are the pre-7.0 equivalents, removed from
+    current servers but checked defensively at zero cost in case an older
+    Bot API server is ever in the loop.
+    """
+    return bool(msg.get("forward_origin") or msg.get("forward_from")
+                or msg.get("forward_from_chat"))
+
+
+def _save_raw_ingest_photo(seller_id: int, data: bytes, ext: str) -> str:
+    """Persist a forwarded photo to RAW_INGEST_MEDIA (NOT PRODUCT_MEDIA -- this
+    is raw staged input, not yet a real product photo; see Tasks 5-6)."""
+    os.makedirs(RAW_INGEST_MEDIA, exist_ok=True)
+    path = os.path.join(RAW_INGEST_MEDIA, f"seller{seller_id}_{os.urandom(6).hex()}{ext}")
+    with open(path, "wb") as f:
+        f.write(data)
+    return path
+
+
+def _handle_forwarded_message(seller_id: int, msg: dict, text: str, photo) -> None:
+    """
+    Stage one forwarded message into bot_raw_ingest as 'unprocessed'. Silent by
+    design -- a rapid-fire forwarded burst (the expected real usage: a seller
+    dumping a dozen supplier messages at once) must not spam a reply per
+    message. debounce_worker.py (Task 5) is what eventually bundles these and
+    produces a SINGLE confirmation once a bundle is fully processed.
+    """
+    media_path = None
+    if photo is not None:
+        file_id, ext = photo
+        try:
+            info = get_file(file_id)
+            fpath = info.get("file_path")
+            if fpath:
+                media_path = _save_raw_ingest_photo(seller_id, download_file(fpath), ext)
+        except Exception as e:
+            # Don't let a bad photo download drop the accompanying text (if any);
+            # stage what we have. The bundle processor can flag a missing image.
+            print(f"raw_ingest photo download failed for seller {seller_id}: {e}",
+                  file=sys.stderr)
+
+    conn = sqlite3.connect(RAW_INGEST_DB_PATH)
+    try:
+        conn.execute(
+            "INSERT INTO bot_raw_ingest (seller_id, media_path, raw_text, status) "
+            "VALUES (?, ?, ?, 'unprocessed')",
+            (seller_id, media_path, text or None))
+        conn.commit()
+    finally:
+        conn.close()
+
+
 def process_update(update: dict) -> None:
     """
     Handle one Telegram update. Identity is derived SOLELY from the authenticated
@@ -107,8 +174,10 @@ def process_update(update: dict) -> None:
 
     Routing (after identity is resolved):
       1. /start <code>            → link an EXISTING account (works while unlinked)
-      1b. bare /start, unlinked   → begin self-service shop onboarding (bot.py)
-      1c. anything else, unlinked → continue/begin onboarding (same as 1b)
+      1a. bare /start, unlinked   → begin self-service shop onboarding (bot.py)
+      1b. anything else, unlinked → continue/begin onboarding (same as 1a)
+      1c. forwarded content       → stage into bot_raw_ingest (never the wizard/NL
+                                     path below -- see debounce_worker.py, Task 5)
       2. /post [name]             → start/restart the deterministic post wizard
       3. /cancel                  → abort an in-progress wizard
       4. mid-wizard photo / text  → the wizard (post_wizard, NO LLM)
@@ -164,6 +233,13 @@ def process_update(update: dict) -> None:
                                   + bot.handle_message(None, "", telegram_user_id=from_id))
         else:
             send_message(chat_id, bot.handle_message(None, text, telegram_user_id=from_id))
+        return
+
+    # 1b. Forwarded content -> the burst staging queue, NEVER the wizard/NL
+    #     dispatch below (a forward is raw supplier data, not the seller
+    #     answering a wizard question or chatting with the bot).
+    if _is_forwarded(msg):
+        _handle_forwarded_message(seller_id, msg, text, photo)
         return
 
     # 2. Start/restart the post wizard (deterministic; an optional name may follow).

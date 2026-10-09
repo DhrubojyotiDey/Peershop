@@ -26,14 +26,18 @@ CLI (manual testing — mimics one Hermes handoff):
 
 import json
 import os
+import sqlite3
 import sys
 
 import conversation
 import describe                     # google.genai client (Gemini) — reused
 import seller_actions
+import telegram_link
 from seller_actions import SellerActionError
 
 DB_PATH = seller_actions.DB_PATH
+
+_ONBOARDING_STEPS = ("awaiting_name", "awaiting_contact", "awaiting_pincode")
 
 # Cheap Gemini model for the narrow, frequent intent parse (per conversational
 # turn). Configurable; the call is bounded and history is this-window-only.
@@ -338,18 +342,131 @@ def _handle_conversational(seller_id, window, text, image_path, db_path) -> str:
         "What would you like to do?")
 
 
+# ── self-service onboarding (brand-new Telegram users, no account yet) ───────
+#
+# Entered when handle_message's seller_id is None. Collects shop name, contact,
+# and pincode over separate messages (one question per turn), persisting
+# progress in bot_onboarding_sessions so a user can close Telegram mid-flow and
+# resume later without losing earlier answers. Finishes by calling
+# telegram_link.create_shop_with_login -- the ONLY path that creates a seller
+# row without requiring a pre-existing web login.
+
+def _get_onboarding_state(telegram_user_id: int, db_path: str) -> dict | None:
+    conn = sqlite3.connect(db_path)
+    try:
+        row = conn.execute(
+            "SELECT step, collected_json FROM bot_onboarding_sessions WHERE telegram_user_id = ?",
+            (telegram_user_id,)).fetchone()
+    finally:
+        conn.close()
+    if row is None:
+        return None
+    return {"step": row[0], "collected": json.loads(row[1])}
+
+
+def _save_onboarding_state(telegram_user_id: int, step: str, collected: dict, db_path: str) -> None:
+    conn = sqlite3.connect(db_path)
+    try:
+        conn.execute(
+            "INSERT INTO bot_onboarding_sessions (telegram_user_id, step, collected_json, updated_at) "
+            "VALUES (?, ?, ?, datetime('now')) "
+            "ON CONFLICT(telegram_user_id) DO UPDATE SET step=excluded.step, "
+            "collected_json=excluded.collected_json, updated_at=datetime('now')",
+            (telegram_user_id, step, json.dumps(collected)))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def _clear_onboarding_state(telegram_user_id: int, db_path: str) -> None:
+    conn = sqlite3.connect(db_path)
+    try:
+        conn.execute("DELETE FROM bot_onboarding_sessions WHERE telegram_user_id = ?",
+                     (telegram_user_id,))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def _handle_onboarding(telegram_user_id: int, text: str, db_path: str) -> str:
+    """One turn of the new-shop setup Q&A. See module comment above."""
+    state = _get_onboarding_state(telegram_user_id, db_path)
+    text = (text or "").strip()
+
+    if state is None:
+        _save_onboarding_state(telegram_user_id, "awaiting_name", {}, db_path)
+        return ("Welcome to PeerShop! Let's set up your shop. "
+                "What's your shop name?")
+
+    collected = state["collected"]
+    step = state["step"]
+
+    if not text:
+        # A photo/sticker/empty message mid-onboarding -- onboarding is text-only
+        # in v1, so re-ask the current question rather than silently advancing.
+        prompts = {
+            "awaiting_name": "What's your shop name?",
+            "awaiting_contact": "What's a phone number buyers can reach you on?",
+            "awaiting_pincode": "What's your PIN code? (send 'skip' to leave it blank)",
+        }
+        return prompts.get(step, "What's your shop name?")
+
+    if step == "awaiting_name":
+        collected["name"] = text
+        _save_onboarding_state(telegram_user_id, "awaiting_contact", collected, db_path)
+        return "Got it. What's a phone number buyers can reach you on?"
+
+    if step == "awaiting_contact":
+        collected["contact"] = text
+        _save_onboarding_state(telegram_user_id, "awaiting_pincode", collected, db_path)
+        return "Almost done. What's your PIN code? (send 'skip' to leave it blank)"
+
+    if step == "awaiting_pincode":
+        pincode = None if text.lower() == "skip" else text
+        seller_id, login, password = telegram_link.create_shop_with_login(
+            telegram_user_id, collected["name"], collected["contact"], pincode,
+            db_path=db_path)
+        _clear_onboarding_state(telegram_user_id, db_path)
+        shop_name = collected["name"]
+        return (
+            f"Shop created! Welcome, {shop_name}.\n"
+            f"Web dashboard login: {login} / {password} (save this now, shown only once)\n"
+            f"Now just forward me product photos/descriptions from your supplier chats "
+            f"and I'll get them ready for admin review. Try /help anytime."
+        )
+
+    # Unreachable in practice (only 3 steps exist) -- reset defensively rather
+    # than leave the user stuck if bot_onboarding_sessions ever holds a stale step.
+    _clear_onboarding_state(telegram_user_id, db_path)
+    return "Something went wrong, let's start over. What's your shop name?"
+
+
 # ── entry point ──────────────────────────────────────────────────────────────
 
-def handle_message(seller_id: int, text: str, image_path: str | None = None,
+def handle_message(seller_id: int | None, text: str, image_path: str | None = None,
                    db_path: str = DB_PATH,
-                   turns_cap: int = conversation.DEFAULT_TURNS_CAP) -> str:
+                   turns_cap: int = conversation.DEFAULT_TURNS_CAP,
+                   telegram_user_id: int | None = None) -> str:
     """
-    Handle one incoming seller message; return the bot's reply. Slash commands
-    are always deterministic; natural language uses the daily conversational
-    window (Gemini) or, once that's spent, tells the seller to use commands.
-    `turns_cap` sizes the NL daily allowance (the Telegram control path passes a
-    higher cap; slash commands are always available regardless).
+    Handle one incoming message; return the bot's reply.
+
+    seller_id=None means this Telegram user has no linked PeerShop account yet
+    -- telegram_user_id is then REQUIRED (raises otherwise) and the message is
+    routed into the self-service onboarding flow instead of the normal seller
+    command/conversational dispatch below.
+
+    For a resolved seller_id: slash commands are always deterministic; natural
+    language uses the daily conversational window (Gemini) or, once that's
+    spent, tells the seller to use commands. `turns_cap` sizes the NL daily
+    allowance (the Telegram control path passes a higher cap; slash commands
+    are always available regardless).
     """
+    if seller_id is None:
+        if telegram_user_id is None:
+            raise ValueError("telegram_user_id is required when seller_id is None "
+                              "(onboarding needs it to track/resume progress)")
+        return _handle_onboarding(telegram_user_id, text, db_path)
+
     text = (text or "").strip()
     if text.startswith("/"):
         return _handle_command(seller_id, text, image_path, db_path)

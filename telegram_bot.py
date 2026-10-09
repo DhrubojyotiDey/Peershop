@@ -106,7 +106,9 @@ def process_update(update: dict) -> None:
     sender id (message.from.id) via telegram_link — never from message text.
 
     Routing (after identity is resolved):
-      1. /start <code>            → link the account (works while unlinked)
+      1. /start <code>            → link an EXISTING account (works while unlinked)
+      1b. bare /start, unlinked   → begin self-service shop onboarding (bot.py)
+      1c. anything else, unlinked → continue/begin onboarding (same as 1b)
       2. /post [name]             → start/restart the deterministic post wizard
       3. /cancel                  → abort an in-progress wizard
       4. mid-wizard photo / text  → the wizard (post_wizard, NO LLM)
@@ -123,24 +125,45 @@ def process_update(update: dict) -> None:
     photo = _photo_from_message(msg)
     low = text.lower()
 
-    # 1. Linking: /start <code> binds this Telegram user to a seller (auth in the code).
+    # 1. Linking: /start <code> binds this Telegram user to an EXISTING seller
+    #    (auth in the code itself). A BARE /start (no code) has nothing to
+    #    redeem -- route it through the same unlinked-user handling as 1b/1c
+    #    below instead of showing a confusing "invalid code" message for a
+    #    user who never had a code to begin with.
     if text and low.split(maxsplit=1)[0] == "/start":
         parts = text.split(maxsplit=1)
         code = parts[1].strip() if len(parts) > 1 else ""
-        sid = telegram_link.redeem_link_code(code, from_id) if code else None
-        if sid:
-            send_message(chat_id, f"Linked to {telegram_link.seller_display(sid)} ✓ "
-                                  "You can now manage your store here — try /help.")
-            send_message(chat_id, bot.TUTORIAL_TEXT)
-        else:
-            send_message(chat_id, "That link code is missing, invalid, or expired. "
-                                  + _LINK_HELP)
-        return
+        if code:
+            sid = telegram_link.redeem_link_code(code, from_id)
+            if sid:
+                send_message(chat_id, f"Linked to {telegram_link.seller_display(sid)} ✓ "
+                                      "You can now manage your store here — try /help.")
+                send_message(chat_id, bot.TUTORIAL_TEXT)
+            else:
+                send_message(chat_id, "That link code is missing, invalid, or expired. "
+                                      + _LINK_HELP)
+            return
+        # Bare /start: if already linked, a status note (not a fresh onboarding
+        # restart); otherwise fall through to onboarding below.
+        existing_sid = telegram_link.resolve_seller(from_id)
+        if existing_sid is not None:
+            send_message(chat_id, f"You're linked to {telegram_link.seller_display(existing_sid)}. "
+                                  "Try /help to see what you can do.")
+            return
+        # else: fall through — unlinked bare /start is handled identically to
+        # 1c below (onboarding's own first-message branch asks for a shop name).
 
-    # Every other message: act ONLY as the bound seller (or refuse if unlinked).
+    # Every other message: act ONLY as the bound seller, OR run the self-service
+    # onboarding flow if this Telegram user has no account yet. Onboarding is
+    # text-only in v1 (no photo step), so a photo from an unlinked user is
+    # politely deferred rather than silently dropped.
     seller_id = telegram_link.resolve_seller(from_id)
     if seller_id is None:
-        send_message(chat_id, _LINK_HELP)
+        if photo is not None and not text:
+            send_message(chat_id, "Let's finish setting up your shop first — "
+                                  + bot.handle_message(None, "", telegram_user_id=from_id))
+        else:
+            send_message(chat_id, bot.handle_message(None, text, telegram_user_id=from_id))
         return
 
     # 2. Start/restart the post wizard (deterministic; an optional name may follow).

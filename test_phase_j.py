@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
 """Token-free tests for the /post wizard (post_wizard) + telegram_bot routing."""
+import functools
 import json
 import os
 import sqlite3
 import tempfile
 
+import bot
 import post_wizard
 import seller_actions
 import telegram_bot
@@ -172,11 +174,15 @@ sent.clear(); telegram_bot.process_update(upd(text="A lovely red kurti."))
 check("finalized via bot → posted + pending", "pending" in sent[-1][1].lower())
 check("draft cleared after bot finalize", post_wizard.active_draft(1, db_path=db) is None)
 
-# unlinked sender is refused
+# unlinked sender: self-service onboarding, NOT the old "link your account" refusal
+# (intentional behavior change -- see telegram_bot.process_update / bot.py Task 3,
+# .hermes/plans/2026-10-10_000000-peershop-self-service-bot-onboarding.md).
 telegram_link.resolve_seller = lambda fid, db_path=None: None
+bot.handle_message = functools.partial(bot.handle_message, db_path=db)
 sent.clear(); telegram_bot.process_update(upd(text="/post"))
-check("unlinked user cannot start wizard", post_wizard.active_draft(1, db_path=db) is None
-      and "link" in sent[-1][1].lower())
+check("unlinked user cannot start the wizard directly", post_wizard.active_draft(1, db_path=db) is None)
+check("unlinked user is routed into self-service onboarding instead",
+      "shop name" in sent[-1][1].lower())
 os.unlink(db)
 
 print(f"\n{ok} passed, {fail} failed")

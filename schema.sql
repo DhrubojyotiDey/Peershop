@@ -26,6 +26,8 @@ DROP TABLE IF EXISTS post_drafts;
 DROP TABLE IF EXISTS product_photos;
 DROP TABLE IF EXISTS telegram_link_codes;
 DROP TABLE IF EXISTS seller_telegram;
+DROP TABLE IF EXISTS bot_onboarding_sessions;
+DROP TABLE IF EXISTS bot_raw_ingest;
 DROP TABLE IF EXISTS seller_sessions;
 DROP TABLE IF EXISTS seller_credentials;
 DROP TABLE IF EXISTS conversation_messages;
@@ -63,6 +65,7 @@ CREATE TABLE sellers (
     contact          TEXT NOT NULL,             -- phone/number buyers use to REACH the seller
     meesho_store_url TEXT,                       -- OPTIONAL outbound link only
     pincode          TEXT,                       -- 6-digit India PIN for hyperlocal "nearest first"; optional
+    seller_type      TEXT NOT NULL DEFAULT 'human', -- 'human' (manually onboarded) or 'bot_seller' (created via the Telegram bot's self-service onboarding flow)
     created_at       TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
@@ -398,6 +401,38 @@ CREATE TABLE telegram_link_codes (
     used_at    TEXT,
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
+
+-- ─────────────────────────────────────────────────────────────────────────────
+-- Self-service bot onboarding (new-shop creation FROM the bot, no pre-existing
+-- web login required -- see telegram_link.create_shop_with_login). Holds
+-- in-progress multi-turn Q&A state so a user can close Telegram mid-onboarding
+-- and resume later without losing earlier answers.
+-- ─────────────────────────────────────────────────────────────────────────────
+CREATE TABLE bot_onboarding_sessions (
+    telegram_user_id INTEGER PRIMARY KEY,
+    step             TEXT NOT NULL,
+    collected_json   TEXT NOT NULL DEFAULT '{}',
+    updated_at       TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+-- ─────────────────────────────────────────────────────────────────────────────
+-- Forwarded-burst staging (raw ingest before debounce bundling + AI extraction).
+-- A seller forwards a rapid-fire dump of text/photos from another chat; each
+-- forwarded message lands here as 'unprocessed' first. debounce_worker.py groups
+-- rows per seller_id once the burst has gone quiet, then hands the bundle to
+-- intake.py's AI-draft path -> seller_actions.post_product() (always 'pending').
+-- ─────────────────────────────────────────────────────────────────────────────
+CREATE TABLE bot_raw_ingest (
+    id         INTEGER PRIMARY KEY,
+    seller_id  INTEGER NOT NULL REFERENCES sellers(id) ON DELETE CASCADE,
+    media_path TEXT,
+    raw_text   TEXT,
+    bundle_id  TEXT,
+    status     TEXT NOT NULL DEFAULT 'unprocessed',
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX idx_bot_raw_ingest_seller_status ON bot_raw_ingest(seller_id, status);
+CREATE INDEX idx_bot_raw_ingest_bundle ON bot_raw_ingest(bundle_id);
 
 -- ─────────────────────────────────────────────────────────────────────────────
 -- Product photos (multi-image). A product may carry up to 4 photos (enforced in

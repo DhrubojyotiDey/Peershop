@@ -6,17 +6,26 @@ The security layer for the seller Telegram control bot. ONE shared bot serves
 every seller; this module decides WHICH seller (if any) an incoming Telegram
 user is, so the bot can only ever act on that seller's own store.
 
-Root of trust is the existing web login:
-  * A one-time link CODE is minted only inside an authenticated dashboard session
-    (create_link_code). To link a Telegram account to seller X you must already be
-    able to log into seller X's web account.
-  * The seller sends `/start <code>` to the bot; redeem_link_code binds the
-    Telegram-authenticated sender id (message.from.id) → seller_id. Codes are
-    single-use and short-lived.
-  * resolve_seller() is the per-message lookup; it NEVER trusts anything in the
-    message text — only the stored binding.
+Two ways a Telegram user becomes bound to a seller:
+  * LINKING an existing account: root of trust is the existing web login. A
+    one-time link CODE is minted only inside an authenticated dashboard session
+    (create_link_code). To link a Telegram account to seller X you must already
+    be able to log into seller X's web account. The seller sends `/start <code>`
+    to the bot; redeem_link_code binds the Telegram-authenticated sender id
+    (message.from.id) → seller_id. Codes are single-use and short-lived.
+  * SELF-SERVICE new shop creation (no pre-existing account): create_shop /
+    create_shop_with_login. Used when the bot's conversational onboarding flow
+    (bot.py's _handle_onboarding) finishes collecting a brand-new user's shop
+    details. Always creates seller_type='bot_seller'. There is no "root of
+    trust" requirement here by design — anyone can message the bot and get a
+    shop; the human-admin pending→live review gate (review.py) is the
+    abuse/spam backstop, not signup friction.
 
-Tables (see schema.sql): seller_telegram (verified binding), telegram_link_codes.
+resolve_seller() is the per-message lookup either way; it NEVER trusts anything
+in the message text — only the stored binding.
+
+Tables (see schema.sql): seller_telegram (verified binding), telegram_link_codes
+(link-existing-account flow only — create_shop bypasses codes entirely).
 """
 
 import os
@@ -79,6 +88,67 @@ def redeem_link_code(code: str, telegram_user_id: int,
         return seller_id
     finally:
         conn.close()
+
+
+def create_shop(telegram_user_id: int, name: str, contact: str,
+                 pincode: str | None = None, owner_name: str | None = None,
+                 db_path: str = DB_PATH) -> int:
+    """
+    Self-service shop creation FROM the bot -- the only path that creates a NEW
+    seller row without requiring a pre-existing web login (create_link_code's
+    root of trust is circular for a brand-new signup: you can't log in to an
+    account that doesn't exist yet). Always seller_type='bot_seller' -- this is
+    how the rest of the system (admin dashboards, reports) distinguishes
+    bot-onboarded shops from manually-admin-created ones.
+
+    Binds the CREATING Telegram user to the new seller immediately, same upsert
+    semantics as redeem_link_code -- if this telegram_user_id was previously
+    bound to a different seller, it is rebound to this new one. Calling this
+    again always creates ANOTHER new shop; it is not an idempotent "get or
+    create" (re-linking an EXISTING shop still goes through redeem_link_code).
+    """
+    name = (name or "").strip()
+    contact = (contact or "").strip()
+    if not name:
+        raise ValueError("shop name is required")
+    if not contact:
+        raise ValueError("contact is required")
+
+    conn = sqlite3.connect(db_path)
+    conn.execute("PRAGMA foreign_keys = ON;")
+    try:
+        cur = conn.execute(
+            "INSERT INTO sellers (name, owner_name, contact, pincode, seller_type) "
+            "VALUES (?, ?, ?, ?, 'bot_seller')",
+            (name, owner_name, contact, pincode))
+        seller_id = cur.lastrowid
+        conn.execute(
+            "INSERT INTO seller_telegram (telegram_user_id, seller_id) VALUES (?, ?) "
+            "ON CONFLICT(telegram_user_id) DO UPDATE SET seller_id = excluded.seller_id, "
+            "linked_at = datetime('now')",
+            (telegram_user_id, seller_id))
+        conn.commit()
+        return seller_id
+    finally:
+        conn.close()
+
+
+def create_shop_with_login(telegram_user_id: int, name: str, contact: str,
+                            pincode: str | None = None, owner_name: str | None = None,
+                            db_path: str = DB_PATH) -> tuple[int, str, str]:
+    """
+    create_shop() plus an auto-generated web dashboard login, so a bot-onboarded
+    seller can ALSO use the existing web dashboard (review their own listings,
+    change price, etc.) without the bot needing to reimplement any of that.
+    The password is returned ONCE for the bot to send in a DM -- auth.py hashes
+    it immediately via set_credentials; nothing here stores it in plaintext.
+    """
+    import auth
+    seller_id = create_shop(telegram_user_id, name, contact, pincode, owner_name, db_path)
+    login = f"shop{seller_id}"
+    password = secrets.token_urlsafe(9)
+    auth.set_credentials(seller_id, login, password, actor="seller", db_path=db_path)
+    return seller_id, login, password
 
 
 def resolve_seller(telegram_user_id: int, db_path: str = DB_PATH) -> int | None:

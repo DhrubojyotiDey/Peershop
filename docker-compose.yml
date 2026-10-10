@@ -1,0 +1,119 @@
+version: "3.9"
+
+# PeerShop — Docker Compose
+# Services: web (public site), admin (review queue), bot (Telegram), cloudflared (tunnel)
+# One shared image (docker/Dockerfile), role selected via PEERSHOP_ROLE env var.
+#
+# Data persistence: peershop.db (SQLite) and media/ are bind-mounted from a
+# named volume so they survive `docker compose down` / image rebuilds and can
+# be backed up or migrated to a GCP persistent disk / GCS bucket unchanged.
+#
+# NOTE on dns: — this host runs Tailscale, which rewrites /etc/resolv.conf to
+# point at its MagicDNS resolver (100.100.100.100). Docker's embedded DNS
+# (127.0.0.11) tries to forward container lookups there, but that address is
+# only reachable from the host's own network namespace, not from a container's
+# bridge subnet — this silently breaks ALL outbound DNS from every container
+# (confirmed: api.telegram.org timed out, google.com failed via default
+# resolver chain, but worked once pointed directly at a public resolver).
+# Fixed here by pinning `dns:` to public resolvers, bypassing the broken
+# Tailscale-forwarding hop entirely. This is a Tailscale+Docker interaction
+# issue, not specific to this app — will also apply on a GCP VM if Tailscale
+# is installed there too, so keep this block even after migration unless you
+# first confirm Docker DNS resolves cleanly on the new host.
+#
+# GCP migration notes (see docker/GCP_MIGRATION.md for detail):
+#   - Images build for linux/amd64 explicitly (this dev host is ARM/Pi).
+#   - SQLite-on-a-volume works fine on a single GCE VM; if you later need
+#     multi-instance/Cloud Run horizontal scaling, SQLite becomes a bottleneck
+#     (file-locking, no concurrent writers across instances) — migrate to
+#     Cloud SQL (Postgres) at that point. Not needed for a single-VM lift-and-shift.
+#   - cloudflared can keep running as-is pointed at the new VM's IP, OR be
+#     swapped for a GCP HTTPS Load Balancer + Cloud DNS once migrated — your call.
+#
+# Usage (dev):  docker compose up -d --build
+# Usage (prod): docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
+
+x-peershop-common: &peershop-common
+  image: peershop:${IMAGE_TAG:-latest}
+  build:
+    context: .
+    dockerfile: docker/Dockerfile
+    platforms:
+      - linux/amd64
+  env_file:
+    - .env
+  dns:
+    - 1.1.1.1
+    - 8.8.8.8
+  volumes:
+    - peershop_data:/app/data        # reserved for future non-SQLite state
+    - peershop_db:/app/db            # peershop.db lives here (see entrypoint note below)
+    - peershop_media:/app/media
+  restart: unless-stopped
+  logging:
+    driver: json-file
+    options:
+      max-size: "10m"
+      max-file: "3"
+
+services:
+  web:
+    <<: *peershop-common
+    container_name: peershop-web
+    environment:
+      PEERSHOP_ROLE: web
+      PEERSHOP_HOST: 0.0.0.0
+      PEERSHOP_PORT: 8000
+    ports:
+      - "127.0.0.1:8000:8000"   # loopback-only, matches current systemd setup; cloudflared fronts it
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://127.0.0.1:8000/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+  admin:
+    <<: *peershop-common
+    container_name: peershop-admin
+    environment:
+      PEERSHOP_ROLE: admin
+      PEERSHOP_REVIEW_HOST: 0.0.0.0
+      PEERSHOP_REVIEW_PORT: 8001
+      PEERSHOP_ADMIN_PASSWORD: ${PEERSHOP_ADMIN_PASSWORD}
+    ports:
+      - "127.0.0.1:8001:8001"   # loopback-only — access via SSH tunnel or VPN, not public
+
+  bot:
+    <<: *peershop-common
+    container_name: peershop-bot
+    environment:
+      PEERSHOP_ROLE: bot
+      PEERSHOP_TELEGRAM_TOKEN: ${PEERSHOP_TELEGRAM_TOKEN}
+      PEERSHOP_TELEGRAM_BOT_USERNAME: ${PEERSHOP_TELEGRAM_BOT_USERNAME}
+      GEMINI_API_KEY: ${GEMINI_API_KEY}
+
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    container_name: peershop-cloudflared
+    # Existing tunnel (16471b3e-0ea0-4cf4-b31e-350b312cd5ec) uses a named
+    # credentials-file + config.yml, not a TUNNEL_TOKEN — mount the host's
+    # existing /etc/cloudflared directly rather than re-issuing a new tunnel.
+    command: tunnel --config /etc/cloudflared/config.yml run
+    # NOTE: no dns: here -- Docker forbids combining a custom dns: list
+    # with network_mode: service:X (DNS belongs to the namespace owner).
+    # This container shares web's network namespace, so it transparently
+    # inherits web's own dns: (1.1.1.1/8.8.8.8) -- no duplication needed.
+    volumes:
+      - /etc/cloudflared:/etc/cloudflared:ro
+    network_mode: "service:web"   # share web's network namespace so
+                                   # http://localhost:8000 inside config.yml
+                                   # resolves to the web container, not itself
+    depends_on:
+      - web
+    restart: unless-stopped
+
+volumes:
+  peershop_data:
+  peershop_db:
+  peershop_media:

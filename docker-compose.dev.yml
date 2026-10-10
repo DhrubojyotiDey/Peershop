@@ -1,0 +1,33 @@
+# PeerShop — DEV environment override (Raspberry Pi 4, local-only)
+#
+# Usage:  docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d web admin
+#
+# This is the Pi's role going forward: a LOCAL-ONLY dev/staging environment.
+# Production (web + admin + bot + cloudflared, shop.peershop.in) now runs on
+# GCP (peershop-vm, us-central1-a) — see docker/GCP_MIGRATION.md.
+#
+# Differences from prod here:
+#   - web/admin bind to 0.0.0.0 (not just 127.0.0.1) so the dev site is
+#     reachable from other devices on the LAN for testing, e.g.
+#     http://<pi-lan-ip>:8000 — matches how this Pi is normally accessed
+#     (headless, SSH'd into from other machines; no localhost-only services).
+#   - NO cloudflared service — dev is intentionally local-only, no public
+#     subdomain. (Originally considered dev.peershop.in via a second tunnel;
+#     decided against it to keep dev simple and avoid a second public attack
+#     surface for a non-production environment.)
+#   - NO bot service — the real Telegram bot token now lives on GCP only.
+#     Pi's bot function is being redesigned separately (different bot/role
+#     for dev, not just a second token) — do not wire up PEERSHOP_TELEGRAM_TOKEN
+#     here until that design lands.
+#   - Uses the SAME peershop.db / media/ that were already on this Pi (the
+#     real production snapshot, kept in place per 2026-10-04 decision) rather
+#     than a fresh/sanitized dataset.
+
+services:
+  web:
+    ports: !override
+      - "0.0.0.0:8000:8000"
+
+  admin:
+    ports: !override
+      - "0.0.0.0:8001:8001"

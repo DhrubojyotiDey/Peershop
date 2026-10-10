@@ -1,0 +1,16 @@
+.git
+.gitignore
+.venv
+__pycache__
+*.pyc
+.claude
+.pytest_cache
+*.db.bak*
+Screenshot_*.png
+DIARY.md
+DEVELOPMENT.md
+team/
+docker/GCP_MIGRATION.md
+.env
+.env.*
+!.env.example

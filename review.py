@@ -38,6 +38,7 @@ import sqlite3
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
+import admin_actions
 import approvals
 import auth
 import categorize
@@ -228,6 +229,8 @@ CSS = """
   .catopt:hover { background:#f2efe9; }
   .catopt .muted { float:right; }
   button.save { background:#efe9e4; color:#5a504a; }
+  button.save.danger { background:#f4d4d0; color:#8a2c20; }
+  button.save.danger:hover { background:#edbdb6; }
   button.save[disabled], button.addcat[disabled] { background:#eceae6; color:#bdb5ae;
         cursor:default; opacity:.65; }
   .empty { text-align:center; color:#9a908a; padding:60px 0; }
@@ -493,13 +496,18 @@ def _user_row(u: dict) -> str:
              'onsubmit="return confirm(\'Reset password for this seller?\')">'
              '<input type="password" name="new_password" placeholder="new pw (min 8)" required>'
              '<button class="save" type="submit">Reset</button></form>')
+    delete = (f'<form method="post" action="/users/{u["id"]}/delete" '
+              f'onsubmit="return confirm(\'PERMANENTLY delete {html.escape(u["name"])} (#{u["id"]}) '
+              'and ALL its data \u2014 products, photos, credentials, Telegram link? '
+              'This cannot be undone.\')">'
+              '<button class="save danger" type="submit">Delete account</button></form>')
     return (
         f'<tr><td>#{u["id"]}</td>'
         f'<td><b>{html.escape(u["name"])}</b>{owner}</td>'
         f'<td>{login}</td><td>{html.escape(u["contact"] or "")}</td>'
         f'<td>{depts}</td><td>{prod}</td><td>{tg}</td>'
         f'<td>{created}</td><td>{last_login}</td>'
-        f'<td>{_pw_cell(u)}</td><td>{reset}</td></tr>')
+        f'<td>{_pw_cell(u)}</td><td>{reset}</td><td>{delete}</td></tr>')
 
 
 def render_users(notice: str = "") -> str:
@@ -508,7 +516,7 @@ def render_users(notice: str = "") -> str:
     n = f'<div class="note" style="margin-bottom:12px">{html.escape(notice)}</div>' if notice else ""
     head = ('<tr><th>ID</th><th>Shop / Owner</th><th>Login</th><th>Contact</th>'
             '<th>Departments</th><th>Products</th><th>Telegram</th><th>Created</th>'
-            '<th>Last login</th><th>Password</th><th>Reset password</th></tr>')
+            '<th>Last login</th><th>Password</th><th>Reset password</th><th>Danger zone</th></tr>')
     table = ('<div class="scroll"><table class="utable">' + head
              + "".join(_user_row(u) for u in users) + '</table></div>')
     if events:
@@ -651,6 +659,23 @@ class Handler(BaseHTTPRequestHandler):
                 pass
             return self._send(200, render_users(f"Password reset for #{sid} “{login}”."),
                               "text/html; charset=utf-8")
+
+        # Admin account removal: irreversible, full wipe (sellers row + every
+        # FK-cascaded table + media files on disk). See admin_actions.py.
+        # Built so a single Telegram account can be reused for repeat testing
+        # of the self-service onboarding flow (sign up -> test -> wipe -> again).
+        if len(uparts) == 3 and uparts[0] == "users" and uparts[2] == "delete":
+            try:
+                sid = int(uparts[1])
+            except ValueError:
+                return self._send(404, "not found", "text/plain")
+            result = admin_actions.delete_seller(sid)
+            if result["ok"]:
+                notice = (f"Deleted #{sid} “{result['name']}” and all its data "
+                          f"({result['media_removed']} media file(s) removed).")
+            else:
+                notice = result.get("message", "")
+            return self._send(200, render_users(notice), "text/html; charset=utf-8")
 
         # Admin takedown of ANY product (live/pending/rejected) → removed, soft.
         rparts = path.strip("/").split("/")       # ["remove", "<id>"]

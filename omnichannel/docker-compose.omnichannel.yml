@@ -1,0 +1,78 @@
+version: "3.9"
+
+# PeerShop Omnichannel Ingestion Pipeline — standalone stack (v3: multi-bot framework).
+# Deliberately decoupled from the main peershop.db (SQLite) app: this stack
+# owns its own Postgres database and only ever talks to the main app via the
+# HTTP API (POST https://dev.peershop.in/api/products in Phase 4), never a
+# direct DB join or shared file -- EXCEPT a narrow, deliberate exception: the
+# admin API mounts peershop.db READ-ONLY solely to validate that a
+# target_seller_id exists and is typed bot_seller before registering a bot
+# pipeline against it. No write ever happens through that mount.
+#
+# Services:
+#   postgres         - omnichannel_ingest + bot_accounts tables
+#   api              - FastAPI: /admin/bot-accounts (register bots), /webhook/whatsapp (stub), /health
+#   telegram-poller  - long-poll worker, one getUpdates loop per registered Telegram bot_account
+#                      (NOT a webhook -- no public HTTPS endpoint needed; matches the existing
+#                      peershop_bot pattern and keeps Pi dev local-only per the 2026-10 decision)
+#   (ocr / llm-synthesizer / nudge-scheduler land in later phases)
+#
+# Usage: docker compose -f docker-compose.omnichannel.yml up -d
+
+x-omnichannel-common: &omnichannel-common
+  build:
+    context: ./app
+    dockerfile: Dockerfile
+  env_file:
+    - .env
+  environment:
+    DATABASE_URL: postgresql://omnichannel:${OMNICHANNEL_DB_PASSWORD}@postgres:5432/omnichannel
+    PEERSHOP_DB_PATH: /peershop_db/peershop.db
+  volumes:
+    - ./media/incoming:/app/media/incoming
+    - /var/lib/docker/volumes/peershop_peershop_db/_data/peershop.db:/peershop_db/peershop.db:ro   # READ-ONLY: seller_id validation only, never written
+  depends_on:
+    postgres:
+      condition: service_healthy
+  restart: unless-stopped
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: omnichannel-postgres
+    environment:
+      POSTGRES_USER: omnichannel
+      POSTGRES_PASSWORD: ${OMNICHANNEL_DB_PASSWORD}
+      POSTGRES_DB: omnichannel
+    volumes:
+      - omnichannel_pgdata:/var/lib/postgresql/data
+      - ./migrations:/docker-entrypoint-initdb.d:ro   # auto-applies NEW migrations on first boot only
+    ports:
+      - "127.0.0.1:5433:5432"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U omnichannel -d omnichannel"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  api:
+    <<: *omnichannel-common
+    container_name: omnichannel-api
+    ports:
+      - "127.0.0.1:8100:8100"   # loopback-only; admin API is privileged, access via SSH tunnel, not public
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8100/health', timeout=3)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+  telegram-poller:
+    <<: *omnichannel-common
+    container_name: omnichannel-telegram-poller
+    command: ["python3", "telegram_poller.py"]
+    # No ports -- this is an outbound-only long-poll worker, nothing listens here.
+
+volumes:
+  omnichannel_pgdata:

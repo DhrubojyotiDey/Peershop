@@ -156,6 +156,38 @@ def ingest_photo(seller_id: int, incoming_path: str, department: str | None = No
         extra={"path": "ai-draft", "detected_object": listing.get("object")})
 
 
+def ingest_photo_noninteractive(seller_id: int, incoming_path: str,
+                                raw_text_hint: str | None = None,
+                                department: str | None = None,
+                                seller_category: str | None = None,
+                                seller_subcategory: str | None = None,
+                                db_path: str = DB_PATH) -> dict:
+    """
+    AI-draft path for bulk/bot-forwarded intake (Task 6): same as ingest_photo
+    (process image -> Gemini two-step describe -> pending product via
+    _finalize/post_product, no refine loop -- there's no human on the other
+    end of a forwarded burst to iterate with) but ALSO accepts an optional
+    raw_text_hint (the seller's/supplier's forwarded caption text, e.g. "Blue
+    saree, cotton, 500rs") which is folded into STEP 2's listing-copy prompt
+    so real caption details aren't thrown away just because this came from a
+    forward instead of the conversational wizard.
+
+    Any SellerActionError from the underlying post_product() call (e.g. "you
+    have no departments yet") propagates unchanged -- the caller
+    (debounce_worker.process_bundle) is responsible for turning that into a
+    flagged bot_raw_ingest status rather than a lost product, not this layer.
+    """
+    _ensure_gemini_key()
+    final_image = _run_pipeline(incoming_path)
+    listing = describe.describe(final_image)
+    if raw_text_hint and raw_text_hint.strip():
+        listing = describe.incorporate_hint(listing, raw_text_hint.strip())
+    return _finalize(
+        seller_id, department, final_image, listing["title"], listing["description"],
+        seller_category, seller_subcategory, db_path,
+        extra={"path": "ai-draft-noninteractive", "detected_object": listing.get("object")})
+
+
 def ingest_manual(seller_id: int, incoming_path: str, department: str,
                   title: str, description: str,
                   seller_category: str | None = None,

@@ -145,6 +145,35 @@ def refine(title: str, description: str, change_request: str) -> dict:
     return parsed or {"title": title, "description": description}
 
 
+def incorporate_hint(listing: dict, hint: str) -> dict:
+    """
+    Fold a caption/raw-text hint (e.g. a supplier's forwarded "Blue saree,
+    cotton, 500rs") into an existing AI-drafted listing. Text-only, one call,
+    no image tokens (the image was already described). On a failed/unparseable
+    call, returns the ORIGINAL listing unchanged rather than losing it --
+    same fail-open behaviour as refine().
+    """
+    client = _client()
+    prompt = (
+        "You are improving a marketplace product listing using an extra hint "
+        "of real context from the seller (e.g. their own caption or supplier "
+        "note). Keep it accurate; only use details confirmed by the hint, "
+        "don't invent anything the hint doesn't support.\n"
+        f'Current title: "{listing.get("title", "")}"\n'
+        f'Current description: "{listing.get("description", "")}"\n'
+        f'Seller\'s hint: "{hint}"\n'
+        'Rewrite as JSON with exactly two keys: "title" (5-10 words) and '
+        '"description" (1-2 sentences, 30-50 words). Output JSON only, no code fences.'
+    )
+    parsed = _parse_title_desc(_generate_with_fallback(client, prompt))
+    if parsed:
+        result = dict(listing)
+        result["title"] = parsed["title"]
+        result["description"] = parsed["description"]
+        return result
+    return listing
+
+
 def describe(image_path: str) -> dict:
     """Full two-step describe. Returns {'title', 'description', 'object'}."""
     obj = identify_object(image_path)
